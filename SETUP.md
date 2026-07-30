@@ -223,6 +223,10 @@ minicom -b 115200 -D /dev/ttyUSB0
 
 裸机项目同理，在 `~/MCU_Proj/STMTest` 里也跑一次。
 
+> **上面三步不够** —— 还必须配 `--query-driver`，否则 `<string.h>` 之类非 freestanding
+> 的标准库头会报 `file not found`（`STM32HAL/src/main.c` 就会中招）。
+> 完整步骤、踩坑速查和 VS Code 设置分层的说明见 **`CLANGD_SETUP.md`**。
+
 详见 `STM32HAL/BUILD.md`。
 
 ---
@@ -311,6 +315,7 @@ ls /usr/share/openocd/scripts/target/ | grep -i stm32f1
 
 | 文档 | 内容 |
 |---|---|
+| `CLANGD_SETUP.md` | clangd 完整配置：`--query-driver`、VS Code 设置分层、跨机器迁移踩坑 |
 | `STMTest/LEARNING.md` | 知识地图 + 分层学习笔记（向量表 / 链接脚本 / 工具链 / 烧录调试） |
 | `STM32HAL/PROJECT_STRUCTURE.md` | HAL 工程结构：每个文件为什么需要、加新外设的步骤 |
 | `STM32HAL/DEBUG_NOTES.md` | 三个踩坑记录 + 通用调试套路（halt → 读 PC → 定位） |
