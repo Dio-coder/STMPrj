@@ -1,0 +1,28 @@
+# 构建产物
+build/
+*.o
+*.d
+*.elf
+*.bin
+*.hex
+*.map
+*.lst
+*.su
+
+# clangd / 编译数据库
+compile_commands.json
+.cache/
+
+# 调试
+.gdb_history
+*.gdb
+
+# Windows 从浏览器下载文件带来的 ADS 残留
+*:Zone.Identifier
+
+# 编辑器
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+*.swp
+*~
