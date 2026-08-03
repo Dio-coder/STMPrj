@@ -7,7 +7,7 @@
 ## 目录全貌
 
 ```
-MCU_Proj/
+STMPrj/
 ├── STM32CubeF1/                    ← ST 官方 SDK（git clone 来的，不改）
 │   └── Drivers/
 │       ├── STM32F1xx_HAL_Driver/
@@ -201,14 +201,16 @@ VPATH = $(sort $(dir $(C_SRC) $(AS_SRC)))
 
 ```
    text    data     bss     dec     hex
-   4696      20     104    4820    12d4
+   4680      20     104    4804    12c4
 ```
 
-- `text` 4696 B → Flash 占用（代码 + 只读数据），64K Flash 用了 7%
+- `text` 4680 B → Flash 占用（代码 + 只读数据），64K Flash 用了 7%
 - `data` 20 B → 有初值的全局变量，**同时占 Flash 和 RAM**
 - `bss` 104 B → 无初值的全局变量，只占 RAM
 
-对比裸机项目的 216 B——HAL 库的开销就在这。但 64K Flash 完全够用，实际项目不必为这点体积回退到裸机。
+> 以上是 jammy + GCC 10.3 的实测值。换编译器版本时数字会小幅浮动，属正常。
+
+对比裸机项目的 228 B——HAL 库的开销就在这。但 64K Flash 完全够用，实际项目不必为这点体积回退到裸机。
 
 > 用了 `-ffunction-sections -fdata-sections` + `-Wl,--gc-sections`，未调用的 HAL 函数会被链接器丢弃，
 > 所以体积远小于"整个 HAL 库"的大小。

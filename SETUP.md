@@ -6,8 +6,7 @@
 **目标板**：STM32F103C8T6（Blue Pill）
 **烧录器**：ST-Link V2
 
-> 本文档的包名和版本号已按 **jammy** 源核对过。
-> 原开发环境是 Ubuntu 24.04，两者的差异在文末「Ubuntu 22.04 vs 24.04 差异」一节列出。
+> 本文档的包名和版本号已按 **jammy** 源核对过，并在本机实测确认。
 
 ---
 
@@ -25,7 +24,8 @@ sudo apt install -y \
     make \
     git \
     bear \
-    minicom
+    minicom \
+    usbutils
 ```
 
 各包作用：
@@ -36,11 +36,12 @@ sudo apt install -y \
 | `binutils-arm-none-eabi` | 2.38 | `arm-none-eabi-ld` / `objcopy` / `size` / `objdump` / `nm` | 链接、格式转换、查看体积和反汇编 |
 | `libnewlib-arm-none-eabi` | 3.3.0 | newlib / newlib-nano | 精简版 C 标准库（`--specs=nano.specs` 用的就是它） |
 | `libnewlib-dev` | 3.3.0 | newlib 头文件 | 编译期需要 |
-| `gdb-multiarch` | 12.0.90 | `gdb-multiarch` | 调试（见下方说明） |
+| `gdb-multiarch` | 12.1 | `gdb-multiarch` | 调试（见下方说明） |
 | `openocd` | **0.11.0** | `openocd` | 烧录 + GDB 服务器 |
 | `make` | 4.3 | `make` | 构建系统 |
 | `bear` | 3.0.18 | `bear` | 生成 `compile_commands.json`，给 VS Code 跳转用 |
 | `minicom` | 2.8 | `minicom` | 串口终端，看 UART 输出 |
+| `usbutils` | 1:014 | `lsusb` | 确认 ST-Link / USB-TTL 已透传进 WSL2（第三节要用） |
 
 > **不要加 `libstdc++-arm-none-eabi-newlib`** —— 这个包在 jammy 源里**不存在**，
 > 写进 `apt install` 会让整条命令直接失败（`E: Unable to locate package`）。
@@ -48,7 +49,7 @@ sudo apt install -y \
 
 ### GDB：`gdb-arm-none-eabi` 这个包不存在
 
-jammy 和 noble 源里**都没有 `gdb-arm-none-eabi`**，只能用 `gdb-multiarch`（已包含在上面的安装命令里）。
+jammy 源里**没有 `gdb-arm-none-eabi`** 这个包，只能用 `gdb-multiarch`（已包含在上面的安装命令里）。
 
 工程 `Makefile` 的 `debug` 目标写的是 `arm-none-eabi-gdb`，所以要建个软链接才能直接用：
 
@@ -62,15 +63,18 @@ sudo ln -s /usr/bin/gdb-multiarch /usr/local/bin/arm-none-eabi-gdb
 
 ```bash
 arm-none-eabi-gcc --version    # 期望 10.3.1
-arm-none-eabi-gdb --version    # 软链接生效的话显示 GNU gdb 12.0.90
+arm-none-eabi-gdb --version    # 软链接生效的话显示 GNU gdb 12.1
 openocd --version              # 期望 0.11.0
 make --version                 # 期望 4.3
 bear --version                 # 期望 3.0.18
+lsusb --version                # 期望 usbutils 014
 ```
 
 ### 想用更新的 GCC（可选）
 
-jammy 的 GCC 10.3 编译这个项目完全没问题，**不需要升级**。
+jammy 的 GCC 10.3 编译这个项目完全没问题，**不需要升级** —— `Makefile` / 链接脚本 / 源码
+用的都是 C11 和标准 GNU 链接脚本语法，没有依赖任何新版工具链特性。
+
 但如果以后想用新版特性（或写 C++），apt 源满足不了，就下 ARM 官方 tarball：
 
 ```bash
@@ -80,6 +84,11 @@ echo 'export PATH=/opt/arm-gnu-toolchain-*/bin:$PATH' >> ~/.bashrc
 ```
 装完记得把 apt 版本卸掉或调整 PATH 优先级，避免两套混用。
 
+> **换到 `/opt` 的工具链会连带弄坏 clangd**：`CLANGD_SETUP.md` 里配的是
+> `--query-driver=/usr/bin/arm-none-eabi-*`，只授权了 `/usr/bin` 下的编译器。
+> 装到 `/opt` 后这条通配符匹配不上，clangd 会重新报 `'string.h' file not found`。
+> 记得同步改成 `--query-driver=/opt/arm-gnu-toolchain-*/bin/arm-none-eabi-*`。
+
 ---
 
 ## 二、下载 ST 官方 SDK（HAL 库）
@@ -87,7 +96,7 @@ echo 'export PATH=/opt/arm-gnu-toolchain-*/bin:$PATH' >> ~/.bashrc
 HAL 项目依赖 `STM32CubeF1`，放在**工程的同级目录**（`Makefile` 里写死了 `CUBE = ../STM32CubeF1`）。
 
 ```bash
-mkdir -p ~/MCU_Proj && cd ~/MCU_Proj
+mkdir -p ~/STMPrj && cd ~/STMPrj
 
 git clone --depth 1 https://github.com/STMicroelectronics/STM32CubeF1.git
 ```
@@ -97,7 +106,7 @@ git clone --depth 1 https://github.com/STMicroelectronics/STM32CubeF1.git
 `--depth 1` 浅克隆**不会**拉 submodule，克隆完 `Drivers/STM32F1xx_HAL_Driver/` 是空目录。必须补一步：
 
 ```bash
-cd ~/MCU_Proj/STM32CubeF1
+cd ~/STMPrj/STM32CubeF1
 git submodule update --init --depth 1 \
     Drivers/STM32F1xx_HAL_Driver \
     Drivers/CMSIS/Device/ST/STM32F1xx \
@@ -106,10 +115,10 @@ git submodule update --init --depth 1 \
 
 ### 验证 SDK 完整性
 
-下面四个路径都必须存在，缺任何一个 HAL 项目都编译不过：
+下面五个路径都必须存在，缺任何一个 HAL 项目都编译不过：
 
 ```bash
-cd ~/MCU_Proj/STM32CubeF1
+cd ~/STMPrj/STM32CubeF1
 ls Drivers/STM32F1xx_HAL_Driver/Src/stm32f1xx_hal_gpio.c
 ls Drivers/STM32F1xx_HAL_Driver/Inc/stm32f1xx_hal.h
 ls Drivers/CMSIS/Device/ST/STM32F1xx/Include/stm32f103xb.h
@@ -216,12 +225,12 @@ minicom -b 115200 -D /dev/ttyUSB0
 1. 装扩展 **clangd**（不要同时装微软的 C/C++ 扩展，两个会打架）
 2. 在工程目录生成编译数据库：
    ```bash
-   cd ~/MCU_Proj/STM32HAL
+   cd ~/STMPrj/STM32HAL
    bear -- make clean all
    ```
 3. 重启 clangd（命令面板 → `clangd: Restart language server`）
 
-裸机项目同理，在 `~/MCU_Proj/STMTest` 里也跑一次。
+裸机项目同理，在 `~/STMPrj/STMTest` 里也跑一次。
 
 > **上面三步不够** —— 还必须配 `--query-driver`，否则 `<string.h>` 之类非 freestanding
 > 的标准库头会报 `file not found`（`STM32HAL/src/main.c` 就会中招）。
@@ -234,15 +243,17 @@ minicom -b 115200 -D /dev/ttyUSB0
 ## 六、验证整条链路
 
 ```bash
-cd ~/MCU_Proj/STM32HAL
+cd ~/STMPrj/STM32HAL
 
 make clean all      # 看到 text / data / bss 三个数字即成功
 make flash          # 期望看到 "** Verified OK **" 和 "** Resetting Target **"
 ```
 
-> **体积不用和旧环境对齐**。原 Ubuntu 24.04 环境（GCC 13.2）编出来是
-> `text=4696 data=20 bss=104`；GCC 10.3 编出来数字会有出入，这是正常的，
-> 只要能链接成功、`text` 在 5KB 上下就对了（64K Flash 完全够）。
+> **实测值**（jammy, GCC 10.3）：
+> `STM32HAL` → `text=4680 data=20 bss=104`；`STMTest` → `text=228 data=4 bss=0`。
+>
+> 换编译器版本时这些数字会小幅浮动，属正常。只要能链接成功、
+> `text` 在 5KB 上下就对了（64K Flash 完全够）。
 
 烧录成功后板上 PC13 的 LED 应该以约 1 秒周期闪烁（500ms 亮 500ms 灭）。
 
@@ -274,40 +285,21 @@ blink 1
 
 ---
 
-## Ubuntu 22.04 vs 24.04 差异
-
-原开发环境是 24.04，迁到 22.04 需要注意的地方（版本号均已核对 apt 源）：
-
-| 包 | jammy 22.04 | noble 24.04 | 影响 |
-|---|---|---|---|
-| `gcc-arm-none-eabi` | **10.3** | 13.2 | 编译产物体积会有差异，功能无影响 |
-| `binutils-arm-none-eabi` | 2.38 | 2.42 | 无影响 |
-| `libnewlib-arm-none-eabi` | 3.3.0 | 4.4.0 | 无影响 |
-| `libstdc++-arm-none-eabi-newlib` | **不存在** | 存在 | **必须从安装命令里去掉**，否则 apt 整条失败 |
-| `gdb-arm-none-eabi` | 不存在 | 不存在 | 两边都得用 `gdb-multiarch` |
-| `gdb-multiarch` | 12.0.90 | 15.1 | 无影响 |
-| `openocd` | **0.11.0** | 0.12.0 | 见下 |
-| `bear` | 3.0.18 | 3.1.3 | 无影响 |
-| `minicom` | 2.8 | 2.9 | 无影响 |
-
-### OpenOCD 0.11 需要留意的点
+## OpenOCD 配置文件路径
 
 工程 `Makefile` 用的是：
 ```makefile
 openocd -f interface/stlink.cfg -f target/stm32f1x.cfg
 ```
-`interface/stlink.cfg` 在 0.11 里就有，**这条命令不用改**。
 
-如果 0.11 下报找不到配置文件，先确认实际路径：
+jammy 的 openocd 是 **0.11.0**，`interface/stlink.cfg` 和 `target/stm32f1x.cfg` 都自带，
+**这条命令不用改**（本机已实测确认）。
+
+万一报找不到配置文件，确认实际路径：
 ```bash
 ls /usr/share/openocd/scripts/interface/ | grep -i stlink
 ls /usr/share/openocd/scripts/target/ | grep -i stm32f1
 ```
-
-### 项目本身不需要改动
-
-`Makefile` / 链接脚本 / 源码在 GCC 10.3 下都能直接编译，
-用的都是 C11 和标准 GNU 链接脚本语法，没有依赖新版工具链的特性。
 
 ---
 
@@ -316,6 +308,7 @@ ls /usr/share/openocd/scripts/target/ | grep -i stm32f1
 | 文档 | 内容 |
 |---|---|
 | `CLANGD_SETUP.md` | clangd 完整配置：`--query-driver`、VS Code 设置分层、跨机器迁移踩坑 |
+| `RUNTIME_MODEL.md` | 运行期内存与执行模型：Flash/RAM 三区、`static` 的真实作用、PC/SP/LR 分工 |
 | `STMTest/LEARNING.md` | 知识地图 + 分层学习笔记（向量表 / 链接脚本 / 工具链 / 烧录调试） |
 | `STM32HAL/PROJECT_STRUCTURE.md` | HAL 工程结构：每个文件为什么需要、加新外设的步骤 |
 | `STM32HAL/DEBUG_NOTES.md` | 三个踩坑记录 + 通用调试套路（halt → 读 PC → 定位） |

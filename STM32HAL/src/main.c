@@ -14,27 +14,79 @@
 
 UART_HandleTypeDef huart1;
 
-/* ---- 时钟配置：先用 HSI 8MHz 跑通，后续再切 HSE+PLL 72MHz ---- */
-static void SystemClock_Config(void)
+/* ---- 时钟配置：HSE 8MHz × PLL9 = 72MHz，失败自动回退 HSI 8MHz ---- */
+
+/* 实际生效的时钟源，供 main 打印 —— 一眼看出晶振到底能不能用 */
+static const char *clock_source = "?";
+
+/*
+ * 切到 72MHz 有两件事必须同时改，漏任一个都出问题：
+ *
+ *   ① FLASH_LATENCY_2  —— F103 的 Flash 取指跟不上 CPU：
+ *                          0~24MHz→0 个等待周期，24~48MHz→1，48~72MHz→2。
+ *                          漏了会取指出错、间歇性跑飞，比 HardFault 难查得多。
+ *   ② APB1CLKDivider=DIV2 —— APB1 总线上限 36MHz，72MHz 直连超规格，
+ *                          挂在 APB1 上的 USART2/3、I2C、TIM2~7 会行为异常。
+ *
+ * 另外 HSI 路径到不了 72MHz：PLL 输入只能是 HSI/2(=4MHz) 或 HSE，
+ * 而 PLLMUL 最大 ×16 → HSI 天花板 64MHz。所以 72MHz 必须用 HSE。
+ */
+static HAL_StatusTypeDef clock_config_hse_72m(void)
 {
     RCC_OscInitTypeDef osc = {0};
     RCC_ClkInitTypeDef clk = {0};
 
-    /* 用内部 HSI 8MHz（一定可用，不依赖外部晶振） */
-    osc.OscillatorType = RCC_OSCILLATORTYPE_HSI;
-    osc.HSIState = RCC_HSI_ON;
+    osc.OscillatorType = RCC_OSCILLATORTYPE_HSE;
+    osc.HSEState       = RCC_HSE_ON;
+    osc.HSEPredivValue = RCC_HSE_PREDIV_DIV1;
+    osc.PLL.PLLState   = RCC_PLL_ON;
+    osc.PLL.PLLSource  = RCC_PLLSOURCE_HSE;
+    osc.PLL.PLLMUL     = RCC_PLL_MUL9;         /* 8MHz × 9 = 72MHz */
+
+    /* HSE 起不来时 HAL 内部等 HSE_STARTUP_TIMEOUT(100ms) 后返回 HAL_TIMEOUT，
+       不会死等 —— 所以这里能安全地判返回值再决定回退。 */
+    if (HAL_RCC_OscConfig(&osc) != HAL_OK)
+        return HAL_ERROR;
+
+    clk.ClockType      = RCC_CLOCKTYPE_HCLK | RCC_CLOCKTYPE_SYSCLK
+                       | RCC_CLOCKTYPE_PCLK1 | RCC_CLOCKTYPE_PCLK2;
+    clk.SYSCLKSource   = RCC_SYSCLKSOURCE_PLLCLK;
+    clk.AHBCLKDivider  = RCC_SYSCLK_DIV1;      /* HCLK  = 72MHz */
+    clk.APB1CLKDivider = RCC_HCLK_DIV2;        /* PCLK1 = 36MHz  ← ② */
+    clk.APB2CLKDivider = RCC_HCLK_DIV1;        /* PCLK2 = 72MHz  (USART1 在这条) */
+
+    return HAL_RCC_ClockConfig(&clk, FLASH_LATENCY_2);   /* ← ① */
+}
+
+/* 回退路径：片内 HSI 8MHz 直连，不依赖任何外部器件 */
+static void clock_config_hsi_8m(void)
+{
+    RCC_OscInitTypeDef osc = {0};
+    RCC_ClkInitTypeDef clk = {0};
+
+    osc.OscillatorType      = RCC_OSCILLATORTYPE_HSI;
+    osc.HSIState            = RCC_HSI_ON;
     osc.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
-    osc.PLL.PLLState = RCC_PLL_NONE;
+    osc.PLL.PLLState        = RCC_PLL_NONE;
     HAL_RCC_OscConfig(&osc);
 
-    /* 直接用 HSI 作为 SYSCLK，不经过 PLL */
-    clk.ClockType = RCC_CLOCKTYPE_HCLK | RCC_CLOCKTYPE_SYSCLK
-                  | RCC_CLOCKTYPE_PCLK1 | RCC_CLOCKTYPE_PCLK2;
-    clk.SYSCLKSource = RCC_SYSCLKSOURCE_HSI;
-    clk.AHBCLKDivider = RCC_SYSCLK_DIV1;
-    clk.APB1CLKDivider = RCC_HCLK_DIV1;
+    clk.ClockType      = RCC_CLOCKTYPE_HCLK | RCC_CLOCKTYPE_SYSCLK
+                       | RCC_CLOCKTYPE_PCLK1 | RCC_CLOCKTYPE_PCLK2;
+    clk.SYSCLKSource   = RCC_SYSCLKSOURCE_HSI;
+    clk.AHBCLKDivider  = RCC_SYSCLK_DIV1;
+    clk.APB1CLKDivider = RCC_HCLK_DIV1;        /* 8MHz，远低于 36MHz 上限 */
     clk.APB2CLKDivider = RCC_HCLK_DIV1;
     HAL_RCC_ClockConfig(&clk, FLASH_LATENCY_0);
+}
+
+static void SystemClock_Config(void)
+{
+    if (clock_config_hse_72m() == HAL_OK) {
+        clock_source = "HSE 8MHz x9 -> 72MHz";
+    } else {
+        clock_config_hsi_8m();
+        clock_source = "HSI 8MHz (HSE FAILED!)";
+    }
 }
 
 /* ---- GPIO 初始化：PC13 LED ---- */
@@ -85,6 +137,22 @@ static void uart_print(const char *s)
     HAL_UART_Transmit(&huart1, (uint8_t *)s, strlen(s), HAL_MAX_DELAY);
 }
 
+/* 手动 uint → 十进制字符串（不依赖 printf/sprintf，省 Flash） */
+static void uart_print_uint(uint32_t v)
+{
+    char tmp[11], buf[12];
+    int i = 0;
+
+    if (v == 0) {
+        tmp[i++] = '0';
+    } else {
+        while (v > 0) { tmp[i++] = (char)('0' + (v % 10)); v /= 10; }
+    }
+    for (int j = 0; j < i; j++) buf[j] = tmp[i - 1 - j];   /* 反转 */
+    buf[i] = '\0';
+    uart_print(buf);
+}
+
 /* ---- main ---- */
 int main(void)
 {
@@ -93,26 +161,25 @@ int main(void)
     GPIO_Init();
     UART1_Init();
 
-    uart_print("Hello from STM32 HAL!\r\n");
+    uart_print("\r\nHello from STM32 HAL!\r\n");
 
-    int cnt = 0;
-    char buf[32];
+    /* 打印实测时钟 —— 这就是「晶振到底能不能用」的判据 */
+    uart_print("clock : ");
+    uart_print(clock_source);
+    uart_print("\r\nSYSCLK: ");
+    uart_print_uint(SystemCoreClock);
+    uart_print(" Hz\r\nPCLK1 : ");
+    uart_print_uint(HAL_RCC_GetPCLK1Freq());
+    uart_print(" Hz  (APB1, max 36MHz)\r\nPCLK2 : ");
+    uart_print_uint(HAL_RCC_GetPCLK2Freq());
+    uart_print(" Hz  (APB2, USART1)\r\n\r\n");
 
+    uint32_t cnt = 0;
     while (1) {
         HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_13);
-
-        /* 手动 int → string（不依赖 printf/sprintf，省 Flash） */
         uart_print("blink ");
-        int n = cnt++;
-        int i = 0;
-        char tmp[12];
-        if (n == 0) { tmp[i++] = '0'; }
-        else { while (n > 0) { tmp[i++] = '0' + (n % 10); n /= 10; } }
-        /* reverse */
-        for (int j = 0; j < i; j++) buf[j] = tmp[i - 1 - j];
-        buf[i] = '\r'; buf[i+1] = '\n'; buf[i+2] = '\0';
-        uart_print(buf);
-
+        uart_print_uint(cnt++);
+        uart_print("\r\n");
         HAL_Delay(500);
     }
 }
