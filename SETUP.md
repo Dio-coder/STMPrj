@@ -309,6 +309,7 @@ ls /usr/share/openocd/scripts/target/ | grep -i stm32f1
 |---|---|
 | `CLANGD_SETUP.md` | clangd 完整配置：`--query-driver`、VS Code 设置分层、跨机器迁移踩坑 |
 | `RUNTIME_MODEL.md` | 运行期内存与执行模型：Flash/RAM 三区、`static` 的真实作用、PC/SP/LR 分工 |
+| `INTERRUPT_ROADMAP.md` | 中断机制七步学习路线：扩向量表 → EXTI → 异常栈帧 → 优先级 → 原子性 → HardFault 分析 |
 | `STMTest/LEARNING.md` | 知识地图 + 分层学习笔记（向量表 / 链接脚本 / 工具链 / 烧录调试） |
 | `STM32HAL/PROJECT_STRUCTURE.md` | HAL 工程结构：每个文件为什么需要、加新外设的步骤 |
 | `STM32HAL/DEBUG_NOTES.md` | 三个踩坑记录 + 通用调试套路（halt → 读 PC → 定位） |

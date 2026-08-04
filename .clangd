@@ -1,0 +1,27 @@
+# clangd 项目配置 —— 跟着仓库走，对所有 clangd 客户端生效
+#
+# 为什么需要这个文件：
+#   clangd 本质是个 x86 Linux 的分析器，不知道 arm-none-eabi-gcc 的内建头文件在哪。
+#   缺了下面这些路径，<string.h> / <stdio.h> 等非 freestanding 标准库头会报
+#   'file not found'（<stdint.h> / <stddef.h> 不受影响，clang 自带那几个）。
+#
+# 为什么不用 --query-driver：
+#   --query-driver 只能作为命令行参数传（.clangd 没有对应的配置键），
+#   意味着每个客户端都得单独配：VS Code 要写 settings.json、Claude Code 的
+#   clangd-lsp 插件不确定带不带、命令行 --check 每次要手敲。
+#   直接把它会问出来的路径写在这里，一次搞定所有客户端，而且跟着仓库走。
+#
+# 下面三条就是 --query-driver='/usr/bin/arm-none-eabi-*' 实测问出来的结果：
+#   got includes: ".../10.3.1/include, .../10.3.1/include-fixed, .../arm-none-eabi/include"
+#
+# ⚠️ 路径里写死了 GCC 版本号 10.3.1。升级工具链后要更新，查当前值：
+#      arm-none-eabi-gcc -print-file-name=include
+#
+# 验证方式（期望 "All checks completed, 0 errors"）：
+#      cd STM32HAL && clangd --check=src/main.c --compile-commands-dir=.
+
+CompileFlags:
+  Add:
+    - -I/usr/lib/gcc/arm-none-eabi/10.3.1/include
+    - -I/usr/lib/gcc/arm-none-eabi/10.3.1/include-fixed
+    - -I/usr/lib/arm-none-eabi/include

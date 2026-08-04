@@ -13,12 +13,16 @@
 ## 零、这份配置要解决的核心问题
 
 clangd 本质是个 **x86 Linux 的 C/C++ 分析器**，它默认不知道 ARM 交叉编译器的头文件在哪。
-交叉编译项目要让它工作，必须解决两件事：
+交叉编译项目要让它工作，必须解决三件事：
 
 | 问题 | 解决手段 |
 |---|---|
-| clangd 怎么知道每个文件的编译参数？ | `compile_commands.json`（用 `bear` 生成） |
-| clangd 怎么知道 `arm-none-eabi-gcc` 的内建头文件在哪？ | `--query-driver`（**最容易漏，见第四节**） |
+| clangd 怎么知道每个文件的编译参数？ | `compile_commands.json`（用 `bear` 生成，第二节） |
+| clangd 怎么知道 `arm-none-eabi-gcc` 的内建头文件在哪？ | 仓库根目录的 **`.clangd`**（第五节）—— **最容易漏的一环** |
+| **不止 VS Code 在用 clangd**，怎么让所有客户端都配好？ | 同上。`.clangd` 对所有客户端生效；VS Code 设置只管 VS Code（第四节） |
+
+> 第三条容易想不到：Claude Code 的 `clangd-lsp` 插件、命令行 `clangd --check`
+> 都**不读** VS Code 的设置。所以配置应该优先放在 `.clangd` 里。
 
 ---
 
@@ -154,15 +158,86 @@ got target:   "arm-none-eabi"
 不写死 `arm-none-eabi-gcc`：这样 `g++`、`as` 之类一并授权，且路径不含工具链版本号，
 以后升级 GCC 不用改这里。
 
-### 为什么不能放进仓库里的 `.clangd` 文件
+### 更好的办法：用仓库里的 `.clangd` 代替（见第五节）
 
-`--query-driver` **只能作为命令行参数传**，clangd 的 `.clangd` 配置文件没有对应的键
-（`.clangd` 能管的是 `CompileFlags`、`Diagnostics`、`Index` 等）。
-所以这条只能走 VS Code 设置，没法跟着仓库走。
+`--query-driver` 本身确实**只能作为命令行参数传** —— clangd 的 `.clangd` 配置文件没有
+对应的配置键（能管的是 `CompileFlags`、`Diagnostics`、`Index` 等）。
+
+**但可以绕过去**：把 query-driver 会问出来的路径，用 `CompileFlags.Add` 直接写进 `.clangd`，
+效果等同，而且跟着仓库走、对所有客户端生效。**本项目已经这么做了，见第五节。**
+
+这一节的 VS Code 设置现在是**冗余的双保险** —— 留着无害（路径重复不会出问题），
+但即使删掉，靠 `.clangd` 也能正常工作。
 
 ---
 
-## 五、验证
+## 五、项目内的 `.clangd`（推荐，一次覆盖所有客户端）
+
+第四节的 VS Code 设置只对 VS Code 生效。但用 clangd 的**不止 VS Code**：
+
+| 客户端 | 谁在用 | 会读 VS Code 设置吗 |
+|---|---|---|
+| VS Code 的 clangd 扩展 | 你，编辑器里跳转/补全 | ✅ |
+| **Claude Code 的 `clangd-lsp` 插件** | Claude Code 分析你的代码 | ❌ **不会** |
+| 命令行 `clangd --check` | 手动排查 | ❌ 每次要手敲参数 |
+
+Claude Code 的插件目录里只有 README 和 LICENSE，**启动参数是内建的，无法确认它带不带
+`--query-driver`**。实测证实隐患真实存在：
+
+```
+不加 --query-driver → E[...] 'string.h' file not found     1 errors
+```
+
+### 解决办法：`.clangd` 放在仓库根目录
+
+`--query-driver` 的作用是**让 clangd 执行一次编译器、问出它的内建头文件路径**。
+既然那些路径是确定的，直接写进 `.clangd` 就行 —— 效果等同，且所有客户端都吃这个文件。
+
+本项目的 `/home/kolt/STMPrj/.clangd`：
+
+```yaml
+CompileFlags:
+  Add:
+    - -I/usr/lib/gcc/arm-none-eabi/10.3.1/include
+    - -I/usr/lib/gcc/arm-none-eabi/10.3.1/include-fixed
+    - -I/usr/lib/arm-none-eabi/include
+```
+
+这三条就是 `--query-driver='/usr/bin/arm-none-eabi-*'` 实测问出来的结果：
+
+```
+got includes: ".../10.3.1/include, .../10.3.1/include-fixed, .../arm-none-eabi/include"
+```
+
+### 实测效果
+
+| 工程 | 只有 `.clangd`（不加 query-driver） | `.clangd` + query-driver |
+|---|---|---|
+| `STM32HAL` | **0 errors** | 0 errors |
+| `STMTest` | **0 errors** | 0 errors |
+
+**两者并存不冲突** —— 路径重复无害，等于双保险。
+
+### 三个好处
+
+1. **对所有 clangd 客户端生效** —— Claude Code 插件、VS Code、命令行 `--check`
+2. **跟着仓库走** —— 换机器 clone 下来就有，不依赖任何人的 `settings.json`
+3. **不会被 Settings Sync 之类的机制搞坏**（附录一那个坑的根源）
+
+### 唯一的代价
+
+**写死了 GCC 版本号 `10.3.1`。** 升级工具链后要改这一行，查当前值：
+
+```bash
+arm-none-eabi-gcc -print-file-name=include
+```
+
+> 相比之下 `--query-driver` 用通配符 `arm-none-eabi-*` 不含版本号，升级工具链不用改 ——
+> 这是它相对 `.clangd` 唯一的优势。两个都留着就同时拿到「覆盖全客户端」和「版本无关」。
+
+---
+
+## 六、验证
 
 命令行直接验证，不用等 VS Code 起来：
 
@@ -193,7 +268,9 @@ VS Code 侧的验证：打开 `STM32HAL/src/main.c`，第 13 行 `#include <stri
 |---|---|
 | `The '...\clangd.exe' language server was not found on your PATH` | User 设置里有坏的 `clangd.path`（Windows 绝对路径）。删掉它，见附录一 |
 | 弹窗一直问要不要下载 clangd | WSL 里没装 clangd。`sudo apt install -y clangd`，**别点弹窗** |
-| `'string.h' file not found` | 没配 `--query-driver`，见第四节 |
+| `'string.h' file not found` | 缺交叉编译器的内建头文件路径。优先检查根目录 `.clangd` 是否存在（第五节），其次 `--query-driver`（第四节） |
+| VS Code 里正常，但 Claude Code / 命令行报 `'string.h' file not found` | 只配了 VS Code 设置，没配 `.clangd`。见**第五节** |
+| 升级工具链后突然报 `'string.h' file not found` | `.clangd` 里写死的 GCC 版本号过期了。用 `arm-none-eabi-gcc -print-file-name=include` 查新路径 |
 | `'stdint.h' file not found` | 这个不该是 query-driver 的问题。检查 `compile_commands.json` 是否指向失效路径 |
 | 头文件全找不到 / 完全没有诊断 | `compile_commands.json` 不存在或为空。用 `bear -- make clean all` 重新生成 |
 | 跳转到错误位置 / 重复的错误提示 | 同时装了微软 C/C++ 扩展，禁用它 |
